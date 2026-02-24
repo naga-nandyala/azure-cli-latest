@@ -1,0 +1,273 @@
+# Test Pipeline: GitHub Release & Homebrew Cask Update
+#
+# Purpose: Test the publish phase in isolation by downloading artifacts
+#          from a previous pipeline run and running only the GitHub Release
+#          and Homebrew cask update tasks.
+#
+# This pipeline is useful for:
+# - Testing GitHub Release creation without rebuilding/signing
+# - Testing Homebrew cask update logic
+# - Quick iteration on publish steps
+# - Verifying artifact contents before publishing
+
+trigger: none
+
+parameters:
+  - name: SourceBuildId
+    displayName: 'Build ID (Run ID) with signed tarballs'
+    type: string
+    default: '298724'
+
+  - name: SourcePipelineId
+    displayName: 'Source Pipeline Definition ID (from URL)'
+    type: string
+    default: 'naga_macos_latest_standalone_release'
+
+  - name: PublishToGitHub
+    displayName: 'Create GitHub Release'
+    type: boolean
+    default: true
+
+  - name: UpdateHomebrew
+    displayName: 'Update Homebrew Cask'
+    type: boolean
+    default: true
+
+  - name: HomebrewTapRepo
+    displayName: 'Homebrew Tap Repository'
+    type: string
+    default: 'naga-nandyala/homebrew-mycli-app'
+
+  - name: PythonVersion
+    displayName: 'Python Version (Homebrew)'
+    type: string
+    default: '3.13'
+
+  - name: Debug
+    displayName: 'Enable debug output'
+    type: boolean
+    default: true
+
+resources:
+  repositories:
+  - repository: homebrewtap
+    type: github
+    endpoint: 'github.com_naga-nandyala'
+    name: naga-nandyala/homebrew-mycli-app
+    ref: main
+
+variables:
+  - name: Codeql.Enabled
+    value: false
+  - name: Codeql.SkipTaskAutoInjection
+    value: true
+  - name: runCodesignValidationInjection
+    value: false
+  - name: GitHubRepo
+    value: $(Build.Repository.Name)
+
+jobs:
+# ============================================================================
+# JOB 1: Download artifacts and create GitHub Release
+# ============================================================================
+- job: CreateGitHubRelease
+  displayName: 'Test | Create GitHub Release'
+  condition: eq('${{ parameters.PublishToGitHub }}', 'true')
+  pool:
+    vmImage: 'ubuntu-latest'
+
+  steps:
+  - checkout: none
+
+  - task: DownloadPipelineArtifact@2
+    displayName: 'Download signed tarball (ARM64)'
+    inputs:
+      buildType: 'specific'
+      project: '$(System.TeamProjectId)'
+      pipeline: '${{ parameters.SourcePipelineId }}'
+      buildVersionToDownload: 'specific'
+      buildId: ${{ parameters.SourceBuildId }}
+      artifactName: 'macos-cli-signed-notarized-arm64'
+      targetPath: '$(Pipeline.Workspace)/macos-cli-signed-notarized-arm64'
+
+  - task: DownloadPipelineArtifact@2
+    displayName: 'Download signed tarball (Intel)'
+    inputs:
+      buildType: 'specific'
+      project: '$(System.TeamProjectId)'
+      pipeline: '${{ parameters.SourcePipelineId }}'
+      buildVersionToDownload: 'specific'
+      buildId: ${{ parameters.SourceBuildId }}
+      artifactName: 'macos-cli-signed-notarized-x86_64'
+      targetPath: '$(Pipeline.Workspace)/macos-cli-signed-notarized-x86_64'
+
+  - bash: |
+      echo "=== Downloaded Artifacts ==="
+      echo "--- ARM64 ---"
+      ls -lh $(Pipeline.Workspace)/macos-cli-signed-notarized-arm64/
+      echo "--- Intel ---"
+      ls -lh $(Pipeline.Workspace)/macos-cli-signed-notarized-x86_64/
+    displayName: 'List downloaded artifacts'
+
+  - task: CopyFiles@2
+    displayName: 'Copy ARM64 release files'
+    inputs:
+      SourceFolder: '$(Pipeline.Workspace)/macos-cli-signed-notarized-arm64'
+      Contents: |
+        azure-cli-*.tar.gz
+        azure-cli-*.tar.gz.sha256
+      TargetFolder: '$(Build.ArtifactStagingDirectory)/release'
+      flattenFolders: true
+
+  - task: CopyFiles@2
+    displayName: 'Copy Intel release files'
+    inputs:
+      SourceFolder: '$(Pipeline.Workspace)/macos-cli-signed-notarized-x86_64'
+      Contents: |
+        azure-cli-*.tar.gz
+        azure-cli-*.tar.gz.sha256
+      TargetFolder: '$(Build.ArtifactStagingDirectory)/release'
+      flattenFolders: true
+
+  - bash: |
+      echo "=== Release Files ==="
+      ls -lh "$(Build.ArtifactStagingDirectory)/release/"
+
+      ARM64_TARBALL=$(find "$(Build.ArtifactStagingDirectory)/release" -name "azure-cli-*-macos-arm64.tar.gz" | head -1)
+      if [ -z "$ARM64_TARBALL" ]; then
+        echo "##[error]No ARM64 tarball found"
+        exit 1
+      fi
+
+      VERSION=$(basename "$ARM64_TARBALL" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+([a-z0-9]+)?' | head -1)
+
+      echo "Version: $VERSION"
+      echo "Tag: azure-cli-${VERSION}"
+      echo "Repository: $(GitHubRepo)"
+
+      echo "##vso[task.setvariable variable=ReleaseTag]azure-cli-${VERSION}"
+      echo "##vso[task.setvariable variable=AzureCliVersion]${VERSION}"
+    displayName: 'Prepare release info'
+
+  - task: GitHubRelease@1
+    displayName: 'Delete existing release if present'
+    continueOnError: true
+    inputs:
+      gitHubConnection: 'github.com_naga-nandyala'
+      repositoryName: '$(GitHubRepo)'
+      action: 'delete'
+      tag: '$(ReleaseTag)'
+
+  - task: GitHubRelease@1
+    displayName: 'Create GitHub Release'
+    inputs:
+      gitHubConnection: 'github.com_naga-nandyala'
+      repositoryName: '$(GitHubRepo)'
+      action: 'create'
+      target: '$(Build.SourceVersion)'
+      tagSource: 'userSpecifiedTag'
+      tag: '$(ReleaseTag)'
+      title: 'Azure CLI $(AzureCliVersion) - macOS (Homebrew Python)'
+      releaseNotesSource: 'inline'
+      releaseNotesInline: |
+        ## Azure CLI $(AzureCliVersion) - macOS (Homebrew Python)
+
+        ### Available Architectures
+        - **Apple Silicon (arm64)**: azure-cli-$(AzureCliVersion)-macos-arm64.tar.gz
+        - **Intel (x86_64)**: azure-cli-$(AzureCliVersion)-macos-x86_64.tar.gz
+
+        ### Requirements
+        - macOS 11+ (Big Sur or later)
+        - Homebrew Python ${{ parameters.PythonVersion }}
+
+        ### Installation via Homebrew Cask
+        ```bash
+        brew tap ${{ parameters.HomebrewTapRepo }}
+        brew install --cask azure-cli
+        ```
+      assets: '$(Build.ArtifactStagingDirectory)/release/*'
+      addChangeLog: false
+
+# ============================================================================
+# JOB 2: Update Homebrew Cask
+# ============================================================================
+- job: UpdateHomebrewCask
+  displayName: 'Test | Update Homebrew Cask'
+  condition: eq('${{ parameters.UpdateHomebrew }}', 'true')
+  dependsOn:
+  - ${{ if eq(parameters.PublishToGitHub, true) }}:
+    - CreateGitHubRelease
+  pool:
+    vmImage: 'ubuntu-latest'
+
+  steps:
+  - checkout: homebrewtap
+    persistCredentials: true
+    path: homebrew-tap
+
+  - task: DownloadPipelineArtifact@2
+    displayName: 'Download cask definition'
+    inputs:
+      buildType: 'specific'
+      project: '$(System.TeamProjectId)'
+      pipeline: '${{ parameters.SourcePipelineId }}'
+      buildVersionToDownload: 'specific'
+      buildId: ${{ parameters.SourceBuildId }}
+      artifactName: 'macos-cask-definition'
+      targetPath: '$(Pipeline.Workspace)/macos-cask-definition'
+
+  - bash: |
+      set -e
+
+      echo "=== Updating Homebrew Cask from artifact ==="
+
+      cd $(Pipeline.Workspace)/homebrew-tap
+      mkdir -p Casks
+
+      cp $(Pipeline.Workspace)/macos-cask-definition/azure-cli.rb Casks/azure-cli.rb
+
+      echo "=== Cask Definition ==="
+      cat Casks/azure-cli.rb
+
+      VERSION=$(grep -oP 'version "\K[^"]+' Casks/azure-cli.rb | head -1)
+      echo "Version: $VERSION"
+
+      git config user.name "Azure Pipeline"
+      git config user.email "azure-pipeline@microsoft.com"
+      git add Casks/azure-cli.rb
+      git commit -m "Update azure-cli to $VERSION" || echo "No changes"
+      git pull --rebase origin main
+      git push origin HEAD:main
+
+      echo "Homebrew cask updated successfully"
+    displayName: 'Push cask to Homebrew tap'
+
+# ============================================================================
+# JOB 3: Summary
+# ============================================================================
+- job: PrintSummary
+  displayName: 'Test | Print Summary'
+  dependsOn:
+  - ${{ if eq(parameters.PublishToGitHub, true) }}:
+    - CreateGitHubRelease
+  - ${{ if eq(parameters.UpdateHomebrew, true) }}:
+    - UpdateHomebrewCask
+  condition: always()
+  pool:
+    vmImage: 'ubuntu-latest'
+
+  steps:
+  - checkout: none
+
+  - bash: |
+      echo "========================================"
+      echo "  TEST PUBLISH PIPELINE SUMMARY"
+      echo "========================================"
+      echo "Source Build ID:   ${{ parameters.SourceBuildId }}"
+      echo "Source Pipeline:   ${{ parameters.SourcePipelineId }}"
+      echo "GitHub Release:    ${{ parameters.PublishToGitHub }}"
+      echo "Homebrew Update:   ${{ parameters.UpdateHomebrew }}"
+      echo "Target Repo:       $(GitHubRepo)"
+      echo "Homebrew Tap:      ${{ parameters.HomebrewTapRepo }}"
+      echo "========================================"
+    displayName: 'Print Summary'
