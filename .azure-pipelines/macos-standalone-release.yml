@@ -35,9 +35,9 @@ parameters:
     default: true
   
   - name: GitHubRepo
-    displayName: 'GitHub Repository (owner/repo)'
+    displayName: 'GitHub Repository (owner/repo) - leave empty to auto-detect'
     type: string
-    default: 'naga-nandyala/azure-cli-pkg-1'
+    default: ''
   
   - name: UpdateHomebrew
     displayName: 'Update Homebrew cask after release'
@@ -56,11 +56,6 @@ parameters:
 
 resources:
   repositories:
-  - repository: selfRepo
-    type: github
-    endpoint: 'github.com_naga-nandyala'
-    name: naga-nandyala/azure-cli-pkg-1
-    ref: main
   - repository: homebrewtap
     type: github
     endpoint: 'github.com_naga-nandyala'
@@ -71,9 +66,12 @@ variables:
   - template: templates/variables.yml
   - group: 'AME ESRP Variable Group'
   
-  # Parameter variable mappings (for use in templates)
+  # GitHubRepo: use parameter if provided, otherwise auto-detect from pipeline repo
   - name: GitHubRepo
-    value: ${{ parameters.GitHubRepo }}
+    ${{ if eq(parameters.GitHubRepo, '') }}:
+      value: $(Build.Repository.Name)
+    ${{ else }}:
+      value: ${{ parameters.GitHubRepo }}
   - name: HomebrewTapRepo
     value: ${{ parameters.HomebrewTapRepo }}
   
@@ -144,7 +142,7 @@ jobs:
     MacosArm64Image: ${{ variables.macos_arm64_pool }}
     MacosIntelImage: ${{ variables.macos_intel_pool }}
     PythonVersion: ${{ parameters.PythonVersion }}
-    GitHubRepo: ${{ parameters.GitHubRepo }}
+    GitHubRepo: $(GitHubRepo)
     Debug: ${{ parameters.Debug }}
     dependsOn:
     - CreateFinalTarball
@@ -161,7 +159,7 @@ jobs:
     PublishToGitHub: ${{ parameters.PublishToGitHub }}
     UpdateHomebrew: ${{ parameters.UpdateHomebrew }}
     TestAfterPublish: false
-    GitHubRepo: ${{ parameters.GitHubRepo }}
+    GitHubRepo: $(GitHubRepo)
     HomebrewTapRepo: ${{ parameters.HomebrewTapRepo }}
     MacosArm64Image: ${{ variables.macos_arm64_pool }}
     MacosIntelImage: ${{ variables.macos_intel_pool }}
