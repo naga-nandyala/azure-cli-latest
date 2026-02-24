@@ -35,9 +35,9 @@ parameters:
     default: true
   
   - name: GitHubRepo
-    displayName: 'GitHub Repository (owner/repo) - leave empty to auto-detect'
+    displayName: 'GitHub Repository (owner/repo)'
     type: string
-    default: ''
+    default: 'naga-nandyala/azure-cli-latest'
   
   - name: UpdateHomebrew
     displayName: 'Update Homebrew cask after release'
@@ -66,12 +66,8 @@ variables:
   - template: templates/variables.yml
   - group: 'AME ESRP Variable Group'
   
-  # GitHubRepo: use parameter if provided, otherwise auto-detect from pipeline repo
   - name: GitHubRepo
-    ${{ if eq(parameters.GitHubRepo, '') }}:
-      value: $(Build.Repository.Name)
-    ${{ else }}:
-      value: ${{ parameters.GitHubRepo }}
+    value: ${{ parameters.GitHubRepo }}
   - name: HomebrewTapRepo
     value: ${{ parameters.HomebrewTapRepo }}
   
